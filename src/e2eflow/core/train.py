@@ -269,11 +269,11 @@ class Trainer():
         assert num == 1 # TODO enable num > 1
 
         with tf.Graph().as_default():
-            input_shape, inputs = self.eval_batch_fn()
-            im1, im2 = inputs[:2]
-            truths = inputs[2:]
+            inputs = self.eval_batch_fn()
+            im1, im2, input_shape = inputs[:3]
+            truths = inputs[3:]
 
-            height, width = input_shape
+            height, width, _ = tf.unstack(tf.squeeze(input_shape), num=3, axis=0)
             im1 = resize_input(im1, height, width, 384, 1280)
             im2 = resize_input(im2, height, width, 384, 1280)
 
@@ -390,12 +390,12 @@ class Trainer():
         assert num == 1 # TODO enable num > 1
 
         with tf.Graph().as_default():
-            input_shape, inputs = self.eval_pose_batch_fn()
-            print("!!!1")
-            im1, im2 = inputs[:2]
-            truths = inputs[2:]
+            inputs = self.eval_pose_batch_fn()
+            im1, im2, input_shape = inputs[:3]
+            truths = inputs[3:]
 
-            height, width = input_shape
+            height, width, _ = tf.unstack(tf.squeeze(input_shape), num=3, axis=0)
+
             im1 = resize_input(im1, height, width, 384, 1280)
             im2 = resize_input(im2, height, width, 384, 1280)
 

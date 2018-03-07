@@ -102,22 +102,17 @@ class Input():
             filenames_1, filenames_2 = zip(*filenames)
             filenames_1 = list(filenames_1)
             filenames_2 = list(filenames_2)
-        """
-        input_queue = tf.train.slice_input_producer([filenames_1, filenames_2],
-                                                    shuffle=False)
-        input_1, input_2 = read_images_from_disk(input_queue)
-        """
+
         input_1 = read_png_image(filenames_1, 1)
         input_2 = read_png_image(filenames_2, 1)
-        img = scipy.misc.imread(filenames_1[0])
         image_1 = self._preprocess_image(input_1)
         image_2 = self._preprocess_image(input_2)
-        return [img.shape[0], img.shape[1]], image_1, image_2
+        return tf.shape(input_1), image_1, image_2
 
     def _input_test(self, image_dir, hold_out_inv=None):
         input_shape, im1, im2 = self._input_images(image_dir, hold_out_inv)
-        return input_shape, tf.train.batch(
-            [im1, im2],
+        return tf.train.batch(
+            [im1, im2, input_shape],
             batch_size=self.batch_size,
             num_threads=self.num_threads,
             allow_smaller_final_batch=True)

@@ -74,8 +74,8 @@ class KITTIInput(Input):
     def _input_train(self, image_dir, flow_dir, hold_out_inv=None):
         input_shape, im1, im2 = self._input_images(image_dir, hold_out_inv)
         flow_occ, mask_occ, flow_noc, mask_noc = self._input_flow(flow_dir, hold_out_inv)
-        return input_shape, tf.train.batch(
-            [im1, im2, flow_occ, mask_occ, flow_noc, mask_noc],
+        return tf.train.batch(
+            [im1, im2, input_shape, flow_occ, mask_occ, flow_noc, mask_noc],
             batch_size=self.batch_size,
             num_threads=self.num_threads,
             allow_smaller_final_batch=True)
@@ -90,42 +90,24 @@ class KITTIInput(Input):
 
         for sequence in test_sequences:
             image_02_folder = os.path.join(self.data.current_dir, image_dir, sequence, 'image_2/')
-            image_03_folder = os.path.join(self.data.current_dir, image_dir, sequence, 'image_3/')
             image_files1 = os.listdir(image_02_folder)
-            image_files2 = os.listdir(image_03_folder)
 
             image_files1.sort()
-            image_files2.sort()
 
             for i in range(len(image_files1) // 2):
                 filenames_1.append(os.path.join(image_02_folder, image_files1[i * 2]))
                 filenames_2.append(os.path.join(image_02_folder, image_files1[i * 2 + 1]))
 
-            for i in range(len(image_files2) // 2):
-                filenames_1.append(os.path.join(image_03_folder, image_files2[i * 2]))
-                filenames_2.append(os.path.join(image_03_folder, image_files2[i * 2 + 1]))
-
-        """
-        input_queue = tf.train.slice_input_producer([filenames_1, filenames_2],
-                                                    shuffle=False)
-        input_1, input_2 = read_images_from_disk(input_queue)
-        """
         input_1 = read_png_image(filenames_1, 1)
         input_2 = read_png_image(filenames_2, 1)
-        img = scipy.misc.imread(filenames_1[0])
         image_1 = self._preprocess_image(input_1)
         image_2 = self._preprocess_image(input_2)
-        return [img.shape[0], img.shape[1]], image_1, image_2
+        return tf.shape(input_1), image_1, image_2
 
     def _input_pose(self, pose_dir, hold_out_inv):
         test_sequences = ['09.txt']
 
-        rx = []
-        ry = []
-        rz = []
-        tx = []
-        ty = []
-        tz = []
+        poses = []
         for sequence in test_sequences:
             pose_dir = os.path.join(self.data.current_dir, pose_dir, sequence)
             with open(pose_dir) as f:
@@ -134,23 +116,13 @@ class KITTIInput(Input):
                     T_w_cam0 = np.fromstring(line, dtype=float, sep=' ')
                     T_w_cam0 = T_w_cam0.reshape(3, 4)
                     R = T_w_cam0[:3,:3]
-                    rot =  mat2euler(R)
-                    t = T_w_cam0[:3, 3]
-                    rx.append(rot[0])
-                    ry.append(rot[1])
-                    rz.append(rot[2])
-                    tx.append(t[0])
-                    ty.append(t[1])
-                    tz.append(t[2])
-        input_queue = tf.train.slice_input_producer([rx, ry, rz, tx, ty, tz],
-                                                    shuffle=False)
-        rx = tf.reshape(input_queue[0], [1])
-        ry = tf.reshape(input_queue[1], [1])
-        rz = tf.reshape(input_queue[2], [1])
-        tx = tf.reshape(input_queue[3], [1])
-        ty = tf.reshape(input_queue[4], [1])
-        tz = tf.reshape(input_queue[5], [1])
-        pose = tf.concat([tx, ty, tz, rx, ry, rz], axis=0)
+                    rot =  tf.constant(mat2euler(R))
+                    t = tf.constant(T_w_cam0[:3, 3])
+                    poses.append(tf.concat([t, rot], axis=0))
+
+        input_queue = tf.train.slice_input_producer([poses],
+                                                shuffle=False)
+        pose = input_queue[0]
         return pose
 
     def _input_odometry(self, image_dir, pose_dir, hold_out_inv=None):
