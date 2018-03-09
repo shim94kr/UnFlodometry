@@ -5,7 +5,7 @@ import numpy as np
 import tensorflow as tf
 import random
 
-from ..core.input import read_png_image, Input
+from ..core.input import read_png_image, read_images_from_disk, Input
 from ..core.augment import random_crop
 import scipy.misc
 from .pose_evaluation_utils import *
@@ -80,30 +80,6 @@ class KITTIInput(Input):
             num_threads=self.num_threads,
             allow_smaller_final_batch=True)
 
-    def _input_odometry_images(self, image_dir, hold_out_inv=None):
-        """Assumes that paired images are next to each other after ordering the
-        files.
-        """
-        test_sequences = ['09']
-        filenames_1 = []
-        filenames_2 = []
-
-        for sequence in test_sequences:
-            image_02_folder = os.path.join(self.data.current_dir, image_dir, sequence, 'image_2/')
-            image_files1 = os.listdir(image_02_folder)
-
-            image_files1.sort()
-
-            for i in range(len(image_files1) // 2):
-                filenames_1.append(os.path.join(image_02_folder, image_files1[i * 2]))
-                filenames_2.append(os.path.join(image_02_folder, image_files1[i * 2 + 1]))
-
-        input_1 = read_png_image(filenames_1, 1)
-        input_2 = read_png_image(filenames_2, 1)
-        image_1 = self._preprocess_image(input_1)
-        image_2 = self._preprocess_image(input_2)
-        return tf.shape(input_1), image_1, image_2
-
     def _input_pose(self, pose_dir, hold_out_inv):
         test_sequences = ['09.txt']
 
@@ -117,19 +93,38 @@ class KITTIInput(Input):
                     T_w_cam0 = T_w_cam0.reshape(3, 4)
                     R = T_w_cam0[:3,:3]
                     rot =  tf.constant(mat2euler(R))
-                    t = tf.constant(T_w_cam0[:3, 3])
+                    t = tf.cast(tf.constant(T_w_cam0[:3, 3]), dtype=tf.float32)
                     poses.append(tf.concat([t, rot], axis=0))
 
-        input_queue = tf.train.slice_input_producer([poses],
-                                                shuffle=False)
-        pose = input_queue[0]
-        return pose
+        return poses
 
     def _input_odometry(self, image_dir, pose_dir, hold_out_inv=None):
-        input_shape, im1, im2 = self._input_odometry_images(image_dir, hold_out_inv)
-        pose = self._input_pose(pose_dir, hold_out_inv)
-        return input_shape, tf.train.batch(
-            [im1, im2, pose],
+
+        test_sequences = ['09']
+        filenames_1 = []
+        filenames_2 = []
+        for sequence in test_sequences:
+            image_02_folder = os.path.join(self.data.current_dir, image_dir, sequence, 'image_2/')
+            image_files = os.listdir(image_02_folder)
+
+            image_files.sort()
+
+            for i in range(len(image_files) - 1):
+                filenames_1.append(os.path.join(image_02_folder, image_files[i]))
+                filenames_2.append(os.path.join(image_02_folder, image_files[i + 1]))
+
+        poses = self._input_pose(pose_dir, hold_out_inv)
+        input_queue = tf.train.slice_input_producer([filenames_1, filenames_2, poses],
+                                                    shuffle=False)
+        input_1, input_2 = read_images_from_disk(input_queue[0:2])
+        pose = input_queue[2]
+
+        image_1 = self._preprocess_image(input_1)
+        image_2 = self._preprocess_image(input_2)
+        input_shape = tf.shape(input_1)
+
+        return tf.train.batch(
+            [image_1, image_2, input_shape, pose],
             batch_size=self.batch_size,
             num_threads=self.num_threads,
             allow_smaller_final_batch=True)

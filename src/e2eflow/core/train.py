@@ -399,29 +399,14 @@ class Trainer():
             im1 = resize_input(im1, height, width, 384, 1280)
             im2 = resize_input(im2, height, width, 384, 1280)
 
-            _, pose, _, flow, flow_bw = unsupervised_loss(
+            _, pose, _ = unsupervised_loss(
                 (im1, im2),
                 params=self.params,
                 normalization=self.normalization,
                 augment=False, return_pose=True)
 
-            print("!!!2")
-            im1 = resize_output(im1, height, width, 3)
-            im2 = resize_output(im2, height, width, 3)
-            flow = resize_output_flow(flow, height, width, 2)
-            flow_bw = resize_output_flow(flow_bw, height, width, 2)
-
-            print("!!!3")
-            images_ = [image_warp(im1, flow) / 255,
-                       flow_to_color(flow),
-                       1 - (1 - occlusion(flow, flow_bw)[0]) * create_outgoing_mask(flow) ,
-                       forward_warp(flow_bw) < DISOCC_THRESH]
-
-            print("!!!4")
-            image_names = ['warped image', 'flow', 'occ', 'reverse disocc']
             variables_to_restore = tf.all_variables()
 
-            print("!!!5")
             values_ = []
             averages_ = []
             if len(truths) == 1:
@@ -440,15 +425,6 @@ class Trainer():
                 raise NotImplementedError()
                 truth_tuples.append(('flow', truths[0], truths[1]))
 
-            print("!!!6")
-            losses = tf.get_collection('losses')
-            for l in losses:
-                values_.append(l)
-                tensor_name = re.sub('tower_[0-9]*/', '', l.op.name)
-                loss_avg_ = summarized_placeholder(tensor_name, key='eval_pose_avg')
-                averages_.append(loss_avg_)
-
-            print("!!!7")
             ckpt = tf.train.get_checkpoint_state(self.ckpt_dir)
             assert ckpt is not None, "No checkpoints to evaluate"
 
@@ -460,14 +436,12 @@ class Trainer():
                 summary_writer = tf.summary.FileWriter(self.eval_pose_summaries_dir)
                 saver = tf.train.Saver(variables_to_restore)
 
-                print("!!!8")
                 sess.run(tf.global_variables_initializer())
                 sess.run(tf.local_variables_initializer())
 
                 restore_networks(sess, self.params, ckpt)
                 global_step = ckpt_path.split('/')[-1].split('-')[-1]
 
-                print("!!!9")
                 coord = tf.train.Coordinator()
                 threads = tf.train.start_queue_runners(sess=sess,
                                                        coord=coord)
@@ -477,16 +451,13 @@ class Trainer():
                 image_lists = []
                 try:
                     while not coord.should_stop():
-                        results = sess.run(values_ + images_)
+                        results = sess.run(values_)
                         values = results[:len(averages_)]
-                        images = results[len(averages_):]
-                        image_lists.append(images)
                         averages += values
                         num_iters += 1
                 except tf.errors.OutOfRangeError:
                     pass
 
-                print("!!!10")
                 averages /= num_iters
                 feed = {k: v for (k, v) in zip(averages_, averages)}
 
@@ -494,22 +465,11 @@ class Trainer():
                 summary = sess.run(summary_, feed_dict=feed)
                 summary_writer.add_summary(summary, global_step)
 
-                print("!!!11")
                 print("-- eval: i = {}".format(global_step))
 
                 coord.request_stop()
                 coord.join(threads)
                 summary_writer.close()
-
-                print("!!!12")
-                if self.interactive_plot:
-                    if self.plot_proc:
-                        self.plot_proc.terminate()
-                    self.plot_proc = Process(target=_eval_plot,
-                                             args=([image_lists], image_names,
-                                                   "{} (i={})".format(self.experiment,
-                                                                      global_step)))
-                    self.plot_proc.start()
 
 
 def average_gradients(tower_grads):

@@ -16,6 +16,7 @@ def length_sq(x):
 
 def compute_losses(im1, im2, flow_fw, flow_bw,
                    pose_fw=None, pose_bw=None, intrinsic=None,
+                   mask_dyn_fw=None, mask_dyn_bw=None, mask_dyn=False,
                    border_mask=None,
                    mask_occlusion='',
                    data_max_distance=1):
@@ -53,15 +54,14 @@ def compute_losses(im1, im2, flow_fw, flow_bw,
         mask_fw *= (1 - disocc_bw)
         mask_bw *= (1 - disocc_fw)
     elif mask_occlusion == 'both':
-        mask_fw *= (1 - disocc_bw) * (1 - fb_occ_fw)
-        mask_bw *= (1 - disocc_fw) * (1 - fb_occ_bw)
+        mask_fw *= ((2 - disocc_bw - fb_occ_fw) / 2)
+        mask_bw *= ((2 - disocc_fw - fb_occ_bw) / 2)
 
     occ_fw = 1 - mask_fw
     occ_bw = 1 - mask_bw
 
     losses['sym'] = (charbonnier_loss(occ_fw - disocc_bw) +
                      charbonnier_loss(occ_bw - disocc_fw))
-
 
     losses['occ'] = (charbonnier_loss(occ_fw) +
                      charbonnier_loss(occ_bw))
@@ -72,23 +72,40 @@ def compute_losses(im1, im2, flow_fw, flow_bw,
     losses['grad'] = (gradient_loss(im1, im2_warped, mask_fw) +
                       gradient_loss(im2, im1_warped, mask_bw))
 
-    losses['smooth_1st'] = (smoothness_loss(flow_fw) +
-                            smoothness_loss(flow_bw))
+    losses['smooth_1st'] = (smoothness_loss(flow_fw, im1) +
+                            smoothness_loss(flow_bw, im2))
 
-    losses['smooth_2nd'] = (second_order_loss(flow_fw) +
-                            second_order_loss(flow_bw))
+    losses['smooth_2nd'] = (second_order_loss(flow_fw, im1) +
+                            second_order_loss(flow_bw, im2))
 
     losses['fb'] = (charbonnier_loss(flow_diff_fw, mask_fw) +
                     charbonnier_loss(flow_diff_bw, mask_bw))
 
-    losses['ternary'] = (ternary_loss(im1, im2_warped, mask_fw,
-                                      max_distance=data_max_distance) +
-                         ternary_loss(im2, im1_warped, mask_bw,
-                                      max_distance=data_max_distance))
+    if mask_dyn:
+        mask_dyn_fw = tf.sigmoid(mask_dyn_fw)
+        mask_dyn_bw = tf.sigmoid(mask_dyn_bw)
+        losses['ternary'] = (ternary_loss(im1, im2_warped, mask_fw * mask_dyn_fw,
+                                          max_distance=data_max_distance) +
+                             2 * ternary_loss(im1, im2_warped, mask_fw * (1 - mask_dyn_fw),
+                                          max_distance=data_max_distance) +
+                             ternary_loss(im2, im1_warped, mask_bw * mask_dyn_bw,
+                                          max_distance=data_max_distance) +
+                             2 * ternary_loss(im2, im1_warped, mask_bw * (1 - mask_dyn_bw),
+                                          max_distance=data_max_distance))
+        losses['mask_dyn'] = (charbonnier_loss(1 - mask_dyn_fw) + charbonnier_loss(1 - mask_dyn_bw))
+    else:
+        losses['ternary'] = (ternary_loss(im1, im2_warped, mask_fw,
+                                          max_distance=data_max_distance) +
+                             ternary_loss(im2, im1_warped, mask_bw,
+                                          max_distance=data_max_distance))
 
     if pose_fw is not None:
-        losses['epipolar'] = (epipolar_loss(flow_fw, pose_fw, intrinsic, mask_fw) + \
-                             epipolar_loss(flow_bw, pose_bw, intrinsic, mask_bw))
+        if mask_dyn:
+            losses['epipolar'] = (epipolar_loss(flow_fw, pose_fw, intrinsic, mask_fw * mask_dyn_fw) + \
+                                 epipolar_loss(flow_bw, pose_bw, intrinsic, mask_bw * mask_dyn_bw))
+        else:
+            losses['epipolar'] = (epipolar_loss(flow_fw, pose_fw, intrinsic, mask_fw) + \
+                                 epipolar_loss(flow_bw, pose_bw, intrinsic, mask_bw))
         losses['sym_pose'] = (sym_pose_loss(pose_fw, pose_bw))
     else :
         losses['epipolar'] = 0
@@ -124,7 +141,9 @@ def epipolar_loss(flow, pose, intrinsic, mask, forward=True):
     epiline1 = tf.matmul(grid_src_rs, fundamental_matrix) # B * HW * 3
     epipolar_error_rs = epiline1 * grid_tgt_rs # B * HW * 3
     epipolar_error = tf.reduce_mean(tf.reshape(epipolar_error_rs, [batch_size, H, W, 3]), axis=3, keep_dims=True)
-    return charbonnier_loss(epipolar_error, mask)
+
+    flow_norm = tf.norm(flow, keep_dims=True, axis=3)
+    return charbonnier_loss(epipolar_error/(flow_norm+0.1), mask)
 
 
 def ternary_loss(im1, im2_warped, mask, max_distance=1):
@@ -242,26 +261,6 @@ def photometric_loss(im_diff, mask):
 def conv2d(x, weights):
     return tf.nn.conv2d(x, weights, strides=[1, 1, 1, 1], padding='SAME')
 
-
-def _smoothness_deltas(flow):
-    with tf.variable_scope('smoothness_delta'):
-        mask_x = create_mask(flow, [[0, 0], [0, 1]])
-        mask_y = create_mask(flow, [[0, 1], [0, 0]])
-        mask = tf.concat(axis=3, values=[mask_x, mask_y])
-
-        filter_x = [[0, 0, 0], [0, 1, -1], [0, 0, 0]]
-        filter_y = [[0, 0, 0], [0, 1, 0], [0, -1, 0]]
-        weight_array = np.ones([3, 3, 1, 2])
-        weight_array[:, :, 0, 0] = filter_x
-        weight_array[:, :, 0, 1] = filter_y
-        weights = tf.constant(weight_array, dtype=tf.float32)
-
-        flow_u, flow_v = tf.split(axis=3, num_or_size_splits=2, value=flow)
-        delta_u = conv2d(flow_u, weights)
-        delta_v = conv2d(flow_v, weights)
-        return delta_u, delta_v, mask
-
-
 def _gradient_delta(im1, im2_warped):
     with tf.variable_scope('gradient_delta'):
         filter_x = [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]] # sobel filter
@@ -286,16 +285,106 @@ def gradient_loss(im1, im2_warped, mask):
         diff = _gradient_delta(im1, im2_warped)
         return charbonnier_loss(diff, mask * gradient_mask)
 
+def _smoothness_deltas(flow, img=None):
+    with tf.variable_scope('smoothness_delta'):
+        mask_x = create_mask(flow, [[0, 0], [0, 1]])
+        mask_y = create_mask(flow, [[0, 1], [0, 0]])
+        mask = tf.concat(axis=3, values=[mask_x, mask_y])
 
-def smoothness_loss(flow):
+        filter_x = [[0, 0, 0], [0, 1, -1], [0, 0, 0]]
+        filter_y = [[0, 0, 0], [0, 1, 0], [0, -1, 0]]
+        weight_array = np.ones([3, 3, 1, 2])
+        weight_array[:, :, 0, 0] = filter_x
+        weight_array[:, :, 0, 1] = filter_y
+        weights = tf.constant(weight_array, dtype=tf.float32)
+
+        flow_u, flow_v = tf.split(axis=3, num_or_size_splits=2, value=flow)
+        delta_u = conv2d(flow_u, weights)
+        delta_v = conv2d(flow_v, weights)
+
+        img_r, img_g, img_b = tf.split(axis=3, num_or_size_splits=3, value=img)
+        delta_Ir = conv2d(img_r, weights)
+        delta_Ig = conv2d(img_g, weights)
+        delta_Ib = conv2d(img_b, weights)
+        delta_I = tf.concat([delta_Ir, delta_Ig, delta_Ib], axis=3)
+        return tf.abs(delta_u) + tf.abs(delta_v), tf.norm(delta_I, axis=3, keep_dims=True), mask
+
+def smoothness_loss(flow, img):
     with tf.variable_scope('smoothness_loss'):
-        delta_u, delta_v, mask = _smoothness_deltas(flow)
+        delta_m, delta_I, mask = _smoothness_deltas(flow, img)
+        return tf.reduce_mean(tf.exp(-tf.pow(delta_I , 0.45)*0.1) * delta_m * mask)
+
+def _smoothness_deltas_orig(flow):
+    with tf.variable_scope('smoothness_delta'):
+        mask_x = create_mask(flow, [[0, 0], [0, 1]])
+        mask_y = create_mask(flow, [[0, 1], [0, 0]])
+        mask = tf.concat(axis=3, values=[mask_x, mask_y])
+
+        filter_x = [[0, 0, 0], [0, 1, -1], [0, 0, 0]]
+        filter_y = [[0, 0, 0], [0, 1, 0], [0, -1, 0]]
+        weight_array = np.ones([3, 3, 1, 2])
+        weight_array[:, :, 0, 0] = filter_x
+        weight_array[:, :, 0, 1] = filter_y
+        weights = tf.constant(weight_array, dtype=tf.float32)
+
+        flow_u, flow_v = tf.split(axis=3, num_or_size_splits=2, value=flow)
+        delta_u = conv2d(flow_u, weights)
+        delta_v = conv2d(flow_v, weights)
+        return delta_u, delta_v, mask
+
+def smoothness_loss_orig(flow):
+    with tf.variable_scope('smoothness_loss'):
+        delta_u, delta_v, mask = _smoothness_deltas_orig(flow)
         loss_u = charbonnier_loss(delta_u, mask)
         loss_v = charbonnier_loss(delta_v, mask)
         return loss_u + loss_v
 
+def _second_order_deltas(flow, img):
+    with tf.variable_scope('_second_order_deltas'):
+        mask_x = create_mask(flow, [[0, 0], [1, 1]])
+        mask_y = create_mask(flow, [[1, 1], [0, 0]])
+        mask_diag = create_mask(flow, [[1, 1], [1, 1]])
+        mask = tf.concat(axis=3, values=[mask_x, mask_y, mask_diag, mask_diag])
 
-def _second_order_deltas(flow):
+        filter_x = [[0, 0, 0],
+                    [1, -2, 1],
+                    [0, 0, 0]]
+        filter_y = [[0, 1, 0],
+                    [0, -2, 0],
+                    [0, 1, 0]]
+        filter_diag1 = [[1, 0, 0],
+                        [0, -2, 0],
+                        [0, 0, 1]]
+        filter_diag2 = [[0, 0, 1],
+                        [0, -2, 0],
+                        [1, 0, 0]]
+        weight_array = np.ones([3, 3, 1, 4])
+        weight_array[:, :, 0, 0] = filter_x
+        weight_array[:, :, 0, 1] = filter_y
+        weight_array[:, :, 0, 2] = filter_diag1
+        weight_array[:, :, 0, 3] = filter_diag2
+        weights = tf.constant(weight_array, dtype=tf.float32)
+
+        flow_u, flow_v = tf.split(axis=3, num_or_size_splits=2, value=flow)
+        delta_u = conv2d(flow_u, weights)
+        delta_v = conv2d(flow_v, weights)
+
+        img_r, img_g, img_b = tf.split(axis=3, num_or_size_splits=3, value=img)
+        delta_Ir = conv2d(img_r, weights)
+        delta_Ig = conv2d(img_g, weights)
+        delta_Ib = conv2d(img_b, weights)
+        delta_I = tf.concat([delta_Ir, delta_Ig, delta_Ib], axis=3)
+        return tf.abs(delta_u) + tf.abs(delta_v), tf.norm(delta_I, axis=3, keep_dims=True), mask
+        return delta_u, delta_v, mask
+
+
+def second_order_loss(flow, img):
+    with tf.variable_scope('second_order_loss'):
+        delta_m, delta_I, mask = _second_order_deltas(flow, img)
+        return tf.reduce_mean(tf.exp(-tf.pow(delta_I , 0.45)*0.1) * delta_m * mask)
+
+
+def _second_order_deltas_orig(flow):
     with tf.variable_scope('_second_order_deltas'):
         mask_x = create_mask(flow, [[0, 0], [1, 1]])
         mask_y = create_mask(flow, [[1, 1], [0, 0]])
@@ -327,9 +416,9 @@ def _second_order_deltas(flow):
         return delta_u, delta_v, mask
 
 
-def second_order_loss(flow):
+def second_order_loss_orig(flow):
     with tf.variable_scope('second_order_loss'):
-        delta_u, delta_v, mask = _second_order_deltas(flow)
+        delta_u, delta_v, mask = _second_order_deltas_orig(flow)
         loss_u = charbonnier_loss(delta_u, mask)
         loss_v = charbonnier_loss(delta_v, mask)
         return loss_u + loss_v

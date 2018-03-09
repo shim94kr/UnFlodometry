@@ -17,7 +17,7 @@ def resize_input(t, height, width, resized_h, resized_w):
 
 
 def resize_output_crop(t, height, width, channels):
-    _, oldh, oldw, c = t.get_shape().as_list()
+    _, oldh, oldw, c = tf.unstack(tf.shape(t), num=4)
     t = tf.reshape(t, [oldh, oldw, c])
     t = tf.image.resize_image_with_crop_or_pad(t, height, width)
     return tf.reshape(t, [1, height, width, channels])
@@ -194,7 +194,6 @@ class Input():
                 intrinsic = input_queue[2]
 
                 image_1, image_2, intrinsic = random_crop([image_1, image_2], [height, width, 3], intrinsic=intrinsic)
-
 
                 return tf.train.batch(
                     [image_1, image_2, intrinsic],
