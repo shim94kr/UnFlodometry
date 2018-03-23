@@ -91,26 +91,29 @@ def compute_losses(im1, im2, flow_fw, flow_bw,
                                       max_distance=data_max_distance))
 
     if pose_fw is not None:
-        losses['epipolar'] = (epipolar_loss(flow_fw, pose_fw, intrinsic1, intrinsic2, mask_fw) + \
-                             epipolar_loss(flow_bw, pose_bw, intrinsic1, intrinsic2, mask_bw))
+        rot1, trans1, sig1, pose_fw = posegrid_vec2mat(pose_fw)
+        rot2, trans2, sig2, pose_bw = posegrid_vec2mat(pose_bw)
+        losses['epipolar'] = (epipolar_loss(flow_fw, rot1, trans1, intrinsic1, intrinsic2, mask_fw) + \
+                             epipolar_loss(flow_bw, rot2, trans2, intrinsic1, intrinsic2, mask_bw))
         losses['smooth_pose_2nd'] = (pose_second_order_loss(pose_fw) +
                                     pose_second_order_loss(pose_bw))
+        losses['pose_scale'] = charbonnier_loss(sig1, mask_fw) + charbonnier_loss(sig2, mask_fw)
         losses['sym_pose'] = 0
     else :
         losses['epipolar'] = 0
         losses['smooth_pose_2nd'] = 0
+        losses['pose_scale'] = 0
         losses['sym_pose'] = 0
     
     return losses
 
-def epipolar_loss(flow, pose, intrinsic1, intrinsic2, mask, forward=True):
+def epipolar_loss(flow, rot, trans, intrinsic1, intrinsic2, mask, forward=True):
     batch_size, H, W, _ = tf.unstack(tf.shape(flow))
     grid_tgt = make_grid(batch_size, H, W)
     grid_src_from_tgt = grid_tgt[:, :, :, 0:2] + flow[:, :, :, 0:2]
 
     grid_tgt = tf.expand_dims(grid_tgt, -1)
 
-    rot, trans, sigt, sigr = posegrid_vec2mat(pose) # B * H * W * 3 * 3, B * H * W * 3
     trans = tf.tile(tf.expand_dims(trans, 3), [1, 1, 1, 3, 1]) # B * H * W * 3 * 3
     essential_matrix  = tf.cross(rot, trans) # B * H * W * 3 * 3
     inv_intrinsic1 = tf.tile(tf.expand_dims(tf.expand_dims(tf.matrix_inverse(intrinsic1), 1), 1), [1, H, W, 1, 1]) # B * H * W * 3 * 3
@@ -122,7 +125,7 @@ def epipolar_loss(flow, pose, intrinsic1, intrinsic2, mask, forward=True):
     epipolar_error = tf.matmul(tf.matmul(grid_src, fundamental_matrix), grid_tgt) # B * H * W * 1 * 1
     epipolar_error = tf.squeeze(epipolar_error, axis=[-1]) # B * H * W * 1
 
-    return tf.reduce_mean(tf.abs(epipolar_error * mask)) + charbonnier_loss(tf.concat([sigt, sigr], axis=3), mask)
+    return tf.reduce_mean(tf.abs(epipolar_error * mask))
 
 
 def ternary_loss(im1, im2_warped, mask, max_distance=1):

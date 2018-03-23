@@ -14,7 +14,7 @@ from .augment import get_multi_scale_intrinsics
 
 POSE_SCALE = 0.0001
 # REGISTER ALL POSSIBLE LOSS TERMS
-LOSSES = ['occ', 'sym', 'sym_pose', 'fb', 'grad', 'ternary', 'photo', 'smooth_1st', 'smooth_pose_2nd', 'smooth_2nd', 'epipolar']
+LOSSES = ['occ', 'sym', 'sym_pose', 'fb', 'grad', 'ternary', 'photo', 'smooth_1st', 'smooth_pose_2nd', 'smooth_2nd', 'epipolar', 'pose_scale']
 
 
 def _track_loss(op, name):
