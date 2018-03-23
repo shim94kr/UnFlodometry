@@ -79,6 +79,73 @@ def euler2mat(z, y, x):
   rotMat = tf.matmul(tf.matmul(xmat, ymat), zmat)
   return rotMat
 
+def eulergrid2mat(z, y, x):
+  """Converts euler angles to rotation matrix
+   TODO: remove the dimension for 'N' (deprecated for converting all source
+         poses altogether)
+   Reference: https://github.com/pulkitag/pycaffe-utils/blob/master/rot_utils.py#L174
+  Args:
+      z: rotation angle along z axis (in radians) -- size = [B, H, W]
+      y: rotation angle along y axis (in radians) -- size = [B, H, W]
+      x: rotation angle along x axis (in radians) -- size = [B, H, W]
+  Returns:
+      Rotation matrix corresponding to the euler angles -- size = [B, N, 3, 3]
+  """
+
+  B, H, W, _ = tf.unstack(tf.shape(z))
+  z = tf.clip_by_value(z, -np.pi, np.pi)
+  y = tf.clip_by_value(y, -np.pi, np.pi)
+  x = tf.clip_by_value(x, -np.pi, np.pi)
+
+  # Expand to B x H x W x 1 x 1
+  z = tf.expand_dims(z, -1)
+  y = tf.expand_dims(y, -1)
+  x = tf.expand_dims(x, -1)
+
+  zeros = tf.zeros([B, H, W, 1, 1])
+  ones  = tf.ones([B, H, W, 1, 1])
+
+  cosz = tf.cos(z)
+  sinz = tf.sin(z)
+  rotz_1 = tf.concat([cosz, -sinz, zeros], axis=4)
+  rotz_2 = tf.concat([sinz,  cosz, zeros], axis=4)
+  rotz_3 = tf.concat([zeros, zeros, ones], axis=4)
+  zmat = tf.concat([rotz_1, rotz_2, rotz_3], axis=3)
+
+  cosy = tf.cos(y)
+  siny = tf.sin(y)
+  roty_1 = tf.concat([cosy, zeros, siny], axis=4)
+  roty_2 = tf.concat([zeros, ones, zeros], axis=4)
+  roty_3 = tf.concat([-siny,zeros, cosy], axis=4)
+  ymat = tf.concat([roty_1, roty_2, roty_3], axis=3)
+
+  cosx = tf.cos(x)
+  sinx = tf.sin(x)
+  rotx_1 = tf.concat([ones, zeros, zeros], axis=4)
+  rotx_2 = tf.concat([zeros, cosx, -sinx], axis=4)
+  rotx_3 = tf.concat([zeros, sinx, cosx], axis=4)
+  xmat = tf.concat([rotx_1, rotx_2, rotx_3], axis=3)
+
+  rotMat = tf.matmul(tf.matmul(xmat, ymat), zmat) # B * H * W * 3 * 3
+  return rotMat
+
+def posegrid_vec2mat(posegrid):
+  """Converts 6DoF parameters to transformation matrix
+  Args:
+      vec: 6DoF parameters in the order of tx, ty, tz, rx, ry, rz -- [B, H, W, 6]
+  Returns:
+      rotation grid -- [B, H, W, 3, 3], translation grid -- [B, H, W, 3]
+  """
+  batch_size, H, W, _ = tf.unstack(tf.shape(posegrid))
+  sigt = tf.exp(-tf.slice(posegrid, [0, 0, 0, 0], [-1, -1, -1, 1]))
+  sigr = tf.exp(-tf.slice(posegrid, [0, 0, 0, 1], [-1, -1, -1, 1]))
+  translation = tf.slice(posegrid, [0, 0, 0, 2], [-1, -1, -1, 3]) * sigt
+  rx = tf.slice(posegrid, [0, 0, 0, 5], [-1, -1, -1, 1]) * sigr
+  ry = tf.slice(posegrid, [0, 0, 0, 6], [-1, -1, -1, 1]) * sigr
+  rz = tf.slice(posegrid, [0, 0, 0, 7], [-1, -1, -1, 1]) * sigr
+  rot_mat = eulergrid2mat(rz, ry, rx)
+  return rot_mat, translation, sigt, sigr
+
 def pose_vec2mat(vec):
   """Converts 6DoF parameters to transformation matrix
   Args:

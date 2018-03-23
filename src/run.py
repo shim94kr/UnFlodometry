@@ -105,7 +105,7 @@ def main(argv=None):
               lambda shift: kinput.input_raw(swap_images=False,
                                              center_crop=True,
                                              shift=shift * run_config['batch_size'],
-                                             epipolar_weight=kconfig.get('epipolar_weight', 0)),
+                                             epipolar_weight=kconfig.get('epipolar_weight', None)),
               lambda: einput.input_train_2012(),
               params=kconfig,
               normalization=kinput.get_normalization(),

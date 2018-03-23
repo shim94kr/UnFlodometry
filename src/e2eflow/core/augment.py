@@ -161,7 +161,6 @@ def random_crop(tensors, size, intrinsic=None, seed=None, name=None):
     Each tensor is cropped in the same way."""
     with tf.name_scope(name, "random_crop", [size]) as name:
         size = tf.convert_to_tensor(size, dtype=tf.int32, name="size")
-        intrinsic = tf.cast(intrinsic, dtype=tf.float32)
         if len(tensors) == 2:
             shape = tf.minimum(tf.shape(tensors[0]), tf.shape(tensors[1]))
         else:
@@ -178,6 +177,7 @@ def random_crop(tensors, size, intrinsic=None, seed=None, name=None):
             result = tf.slice(tensor, offset, size)
             results.append(result)
         if intrinsic is not None:
+            intrinsic = tf.cast(intrinsic, dtype=tf.float32)
             fx = intrinsic[0, 0]
             fy = intrinsic[1, 1]
             cx = intrinsic[0, 2] - tf.cast(offset[0], dtype=tf.float32)

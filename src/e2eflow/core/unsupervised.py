@@ -12,8 +12,9 @@ from .flownet import flownet, FLOW_SCALE
 from .augment import get_multi_scale_intrinsics
 
 
+POSE_SCALE = 0.0001
 # REGISTER ALL POSSIBLE LOSS TERMS
-LOSSES = ['occ', 'sym', 'mask_dyn', 'sym_pose', 'fb', 'grad', 'ternary', 'photo', 'smooth_1st', 'smooth_2nd', 'epipolar']
+LOSSES = ['occ', 'sym', 'sym_pose', 'fb', 'grad', 'ternary', 'photo', 'smooth_1st', 'smooth_pose_2nd', 'smooth_2nd', 'epipolar']
 
 
 def _track_loss(op, name):
@@ -27,9 +28,9 @@ def _track_image(op, name):
 
 def unsupervised_loss(batch, params, normalization=None, augment=True,
                       return_flow=False, return_pose=False):
-    intrinsics = []
+    intrinsics1 = []
     if len(batch) == 3:
-        im1, im2, intrinsics = batch
+        im1, im2, intrinsics1 = batch
     else:
         im1, im2 = batch
     im1 = im1 / 255.0
@@ -41,13 +42,22 @@ def unsupervised_loss(batch, params, normalization=None, augment=True,
     border_mask = create_border_mask(im1, 0.1)
     if augment:
         if len(batch) == 3:
-            im1_geo, im2_geo, border_mask, intrinsics = random_affine(
+            im1_geo, im2_geo, border_mask_global, intrinsics1 = random_affine(
                 [im1, im2, border_mask],
                 horizontal_flipping=False,
                 min_scale=0.9, max_scale=1.1,
-                intrinsics=intrinsics
+                intrinsics=intrinsics1
                 )
-            intrinsics = get_multi_scale_intrinsics(intrinsics, 7)
+            intrinsics2 = intrinsics1
+            im2_geo, border_mask_local, intrinsics2 = random_affine(
+                [im2_geo, border_mask],
+                horizontal_flipping=False,
+                min_scale=0.9, max_scale=1.1,
+                intrinsics=intrinsics2
+                )
+            border_mask = border_mask_local * border_mask_global
+            intrinsics1 = get_multi_scale_intrinsics(intrinsics1, 7)
+            intrinsics2 = get_multi_scale_intrinsics(intrinsics2, 7)
         else:
             im1_geo, im2_geo, border_mask_global = random_affine(
                 [im1, im2, border_mask],
@@ -84,29 +94,17 @@ def unsupervised_loss(batch, params, normalization=None, augment=True,
     full_resolution = params.get('full_res')
     train_all = params.get('train_all')
 
-    mask_dyn = True
-    masks_dyn_fw = []
-    masks_dyn_bw = []
-    if mask_dyn :
-        flows_fw, flows_bw, poses_fw, poses_bw, masks_dyn_fw, masks_dyn_bw = flownet(im1_photo, im2_photo,
-                                                                                    flownet_spec=flownet_spec,
-                                                                                    full_resolution=full_resolution,
-                                                                                    backward_flow=True,
-                                                                                    mask_dyn=True,
-                                                                                    train_all=train_all)
-    else:
-        flows_fw, flows_bw, poses_fw, poses_bw = flownet(im1_photo, im2_photo,
-                                                    flownet_spec=flownet_spec,
-                                                    full_resolution=full_resolution,
-                                                    backward_flow=True,
-                                                    train_all=train_all)
+    flows_fw, flows_bw, poses_fw, poses_bw = flownet(im1_photo, im2_photo,
+                                                flownet_spec=flownet_spec,
+                                                full_resolution=full_resolution,
+                                                backward_flow=True,
+                                                train_all=train_all)
 
     flows_fw = flows_fw[-1]
     flows_bw = flows_bw[-1]
-    poses_fw = poses_fw[-1]
-    poses_bw = poses_bw[-1]
-    masks_dyn_fw = masks_dyn_fw[-1]
-    masks_dyn_bw = masks_dyn_bw[-1]
+    if "P" in flownet_spec:
+        poses_fw = poses_fw[-1]
+        poses_bw = poses_bw[-1]
 
     # -------------------------------------------------------------------------
     # Losses
@@ -139,6 +137,8 @@ def unsupervised_loss(batch, params, normalization=None, augment=True,
     else:
         flow_enum = [(0, (flows_fw[0], flows_bw[0]))]
 
+    mean_pose_fw = None
+    mean_pose_bw = None
     for i, flow_pair in flow_enum:
         layer_name = "loss" + str(i + 2)
 
@@ -149,22 +149,31 @@ def unsupervised_loss(batch, params, normalization=None, augment=True,
             flow_fw_s, flow_bw_s = flow_pair
             mask_occlusion = params.get('mask_occlusion', '')
             assert mask_occlusion in ['fb', 'disocc', '', 'both']
-
+            """
+            if "P" in flownet_spec:
+                poses_fw[i] = POSE_SCALE * poses_fw[i]
+                poses_bw[i] = POSE_SCALE * poses_bw[i]
+            """
             if len(batch) == 3:
                 losses = compute_losses(im1_s, im2_s,
-                                    flow_fw_s * flow_scale, flow_bw_s * flow_scale,
-                                    poses_fw, poses_bw, intrinsics[:, i + 2, :, :],
-                                    masks_dyn_fw[i], masks_dyn_bw[i], mask_dyn=True,
-                                    border_mask=mask_s if params.get('border_mask') else None,
-                                    mask_occlusion=mask_occlusion,
-                                    data_max_distance=layer_patch_distances[i])
+                            flow_fw_s * flow_scale, flow_bw_s * flow_scale,
+                            poses_fw[i], poses_bw[i], intrinsics1[:, i + 2, :, :], intrinsics2[:, i + 2, :, :],
+                            border_mask=mask_s if params.get('border_mask') else None,
+                            mask_occlusion=mask_occlusion,
+                            data_max_distance=layer_patch_distances[i])
+                if mean_pose_fw is None :
+                    mean_pose_fw = tf.reduce_mean(poses_fw[i], axis=[1, 2])
+                    mean_pose_bw = tf.reduce_mean(poses_bw[i], axis=[1, 2])
+                else:
+                    mean_pose_fw = tf.concat([mean_pose_fw, tf.reduce_mean(poses_fw[i], axis=[1, 2])], axis=0)
+                    mean_pose_bw = tf.concat([mean_pose_bw, tf.reduce_mean(poses_bw[i], axis=[1, 2])], axis=0)
             else :
                 losses = compute_losses(im1_s, im2_s,
                                     flow_fw_s * flow_scale, flow_bw_s * flow_scale,
-                                    mask_dyn_fw=masks_dyn_fw[i], mask_dyn_bw=masks_dyn_bw[i], mask_dyn=True,
                                     border_mask=mask_s if params.get('border_mask') else None,
                                     mask_occlusion=mask_occlusion,
                                     data_max_distance=layer_patch_distances[i])
+
 
             layer_loss = 0.0
 
@@ -181,6 +190,9 @@ def unsupervised_loss(batch, params, normalization=None, augment=True,
             im2_s = downsample(im2_s, 2)
             mask_s = downsample(mask_s, 2)
 
+    if len(batch) == 3:
+        tf.add_to_collection('poses', tf.identity(mean_pose_fw, name='pose_fw'))
+        tf.add_to_collection('poses', tf.identity(mean_pose_bw, name='pose_bw'))
     regularization_loss = tf.losses.get_regularization_loss()
     final_loss = combined_loss + regularization_loss
 
@@ -196,6 +208,6 @@ def unsupervised_loss(batch, params, normalization=None, augment=True,
     if return_flow:
         return final_loss, final_flow_fw, final_flow_bw
     elif return_pose:
-        return final_loss, poses_fw, poses_bw
+        return final_loss, poses_fw, poses_bw, final_flow_fw, final_flow_bw
     else:
         return final_loss

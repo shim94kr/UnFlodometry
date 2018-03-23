@@ -81,25 +81,20 @@ class KITTIInput(Input):
             allow_smaller_final_batch=True)
 
     def _input_pose(self, pose_dir, hold_out_inv):
-        test_sequences = ['09.txt']
+        test_sequences = ['09_full.txt']
 
         poses = []
         for sequence in test_sequences:
             pose_dir = os.path.join(self.data.current_dir, pose_dir, sequence)
             with open(pose_dir) as f:
                 for line in f:
-                    line = line.rstrip('\n')
-                    T_w_cam0 = np.fromstring(line, dtype=float, sep=' ')
-                    T_w_cam0 = T_w_cam0.reshape(3, 4)
-                    R = T_w_cam0[:3,:3]
-                    rot =  tf.constant(mat2euler(R))
-                    t = tf.cast(tf.constant(T_w_cam0[:3, 3]), dtype=tf.float32)
-                    poses.append(tf.concat([t, rot], axis=0))
+                    line = line.replace(",", " ").replace("\t"," ").rstrip("\n")
+                    pose = np.fromstring(line, dtype=float, sep=' ')
+                    pose = tf.cast(pose, dtype=tf.float32)
+                    poses.append(pose)
+        return poses[1:]
 
-        return poses
-
-    def _input_odometry(self, image_dir, pose_dir, hold_out_inv=None):
-
+    def _input_odometry(self, image_dir, pose_dir, shift, hold_out_inv=None):
         test_sequences = ['09']
         filenames_1 = []
         filenames_2 = []
@@ -114,8 +109,8 @@ class KITTIInput(Input):
                 filenames_2.append(os.path.join(image_02_folder, image_files[i + 1]))
 
         poses = self._input_pose(pose_dir, hold_out_inv)
-        input_queue = tf.train.slice_input_producer([filenames_1, filenames_2, poses],
-                                                    shuffle=False)
+
+        input_queue = tf.train.slice_input_producer([filenames_1, filenames_2, poses], capacity=1590, shuffle=False)
         input_1, input_2 = read_images_from_disk(input_queue[0:2])
         pose = input_queue[2]
 
@@ -213,5 +208,5 @@ class KITTIInput(Input):
 
     def input_odometry(self, hold_out_inv=None):
         return self._input_odometry('kitti_odom/sequences',
-                                 'kitti_odom/poses',
+                                 'kitti_odom/gt_pose/ground_truth',
                                  hold_out_inv)

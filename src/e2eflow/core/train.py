@@ -18,6 +18,8 @@ from .flow_util import flow_error_avg, flow_to_color, flow_error_image, outlier_
 from ..gui import display
 from .util import summarized_placeholder
 from .input import resize_input, resize_output_crop, resize_output, resize_output_flow
+from ..kitti.pose_evaluation_utils import *
+import scipy.misc
 
 
 def restore_networks(sess, params, ckpt, ckpt_path=None):
@@ -85,6 +87,16 @@ def _add_image_summaries():
         tensor_name = re.sub('tower_[0-9]*/', '', im.op.name)
         tf.summary.image(tensor_name, im)
 
+def _add_pose_summaries():
+    poses = tf.get_collection('poses')
+    for pose in poses:
+        tf.summary.histogram("tx", pose[:,0])
+        tf.summary.histogram("ty", pose[:,1])
+        tf.summary.histogram("tz", pose[:,2])
+        tf.summary.histogram("rx", pose[:,3])
+        tf.summary.histogram("ry", pose[:,4])
+        tf.summary.histogram("rz", pose[:,5])
+
 
 def _eval_plot(results, image_names, title):
     import matplotlib.pyplot as plt
@@ -138,11 +150,10 @@ class Trainer():
 
         print('-- training from i = {} to {}'.format(start_iter, max_iter))
 
-        assert (max_iter - start_iter + 1) % save_interval == 0
+        #assert (max_iter - start_iter + 1) % save_interval == 0
         for i in range(start_iter, max_iter + 1, save_interval):
             self.train(i, i + save_interval - 1, i - (min_iter + 1))
             self.eval(1)
-            #self.eval_pose(1)
 
         if self.plot_proc:
             self.plot_proc.join()
@@ -156,8 +167,9 @@ class Trainer():
         def _add_summaries():
             _add_loss_summaries()
             _add_param_summaries()
-            if self.debug:
-                _add_image_summaries()
+            _add_pose_summaries()
+            #if self.debug:
+            _add_image_summaries()
 
         if len(self.devices) == 1:
             loss_ = self.loss_fn(batch, self.params, self.normalization)
@@ -385,6 +397,52 @@ class Trainer():
                                                                       global_step)))
                     self.plot_proc.start()
 
+    def eval_pose_manual(self):
+        current_dir = '../data'
+        image_dir = 'kitti_odom/sequences'
+        output_file = '../pose_data/09_full.txt'
+        test_sequences_image = ['09']
+        filenames_1 = []
+        filenames_2 = []
+        results = [[0.,0.,0.,0.,0.,0.]]
+        times = []
+
+        ckpt = tf.train.get_checkpoint_state(self.ckpt_dir)
+        assert ckpt is not None, "No checkpoints to evaluate"
+
+        with tf.Session() as sess:
+            restore_networks(sess, self.params, ckpt)
+
+            for sequence in test_sequences_image:
+                with open(current_dir + image_dir +'%.2d/times.txt' % sequence, 'r') as f:
+                    times = f.readlines()
+                times = np.array([float(s[:-1]) for s in times])
+
+                image_02_folder = os.path.join(current_dir, image_dir, sequence, 'image_2/')
+                image_files = os.listdir(image_02_folder)
+
+                image_files.sort()
+
+                for i in range(len(image_files) - 1):
+                    filenames_1.append(os.path.join(image_02_folder, image_files[i]))
+                    filenames_2.append(os.path.join(image_02_folder, image_files[i + 1]))
+
+                for file1, file2 in zip(filenames_1, filenames_2):
+                    img1 = tf.cast(tf.constant(scipy.misc.imread(file1)), dtype=tf.float32)
+                    img2 = tf.cast(tf.constant(scipy.misc.imread(file2)), dtype=tf.float32)
+                    height, width, _ = tf.unstack(tf.shape(img1), num=3, axis=0)
+                    img1 = resize_input(img1, height, width, 384, 1280)
+                    img2 = resize_input(img2, height, width, 384, 1280)
+
+                    _, pose, _ = unsupervised_loss(
+                        (img1, img2),
+                        params=self.params,
+                        normalization=self.normalization,
+                        augment=False, return_pose=True)
+
+                    results.append(sess.run(pose))
+
+        dump_pose_seq_TUM(output_file, results, times)
 
     def eval_pose(self, num):
         assert num == 1 # TODO enable num > 1
@@ -398,12 +456,6 @@ class Trainer():
 
             im1 = resize_input(im1, height, width, 384, 1280)
             im2 = resize_input(im2, height, width, 384, 1280)
-
-            _, pose, _ = unsupervised_loss(
-                (im1, im2),
-                params=self.params,
-                normalization=self.normalization,
-                augment=False, return_pose=True)
 
             variables_to_restore = tf.all_variables()
 
@@ -448,13 +500,13 @@ class Trainer():
                 averages = np.zeros(len(averages_))
                 num_iters = 0
 
-                image_lists = []
                 try:
                     while not coord.should_stop():
                         results = sess.run(values_)
                         values = results[:len(averages_)]
                         averages += values
                         num_iters += 1
+                        print(num_iters)
                 except tf.errors.OutOfRangeError:
                     pass
 
@@ -465,7 +517,7 @@ class Trainer():
                 summary = sess.run(summary_, feed_dict=feed)
                 summary_writer.add_summary(summary, global_step)
 
-                print("-- eval: i = {}".format(global_step))
+                print("-- eval_pose: i = {}".format(global_step))
 
                 coord.request_stop()
                 coord.join(threads)
