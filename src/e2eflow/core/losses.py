@@ -95,10 +95,16 @@ def compute_losses(im1, im2, flow_fw, flow_bw,
         rot2, trans2, sig2, pose_bw = posegrid_vec2mat(pose_bw)
         losses['epipolar'] = (epipolar_loss(flow_fw, rot1, trans1, intrinsic1, intrinsic2, mask_fw) + \
                              epipolar_loss(flow_bw, rot2, trans2, intrinsic1, intrinsic2, mask_bw))
-        losses['smooth_pose_2nd'] = (pose_second_order_loss(pose_fw) +
-                                    pose_second_order_loss(pose_bw))
-        losses['pose_scale'] = charbonnier_loss(sig1, mask_fw) + charbonnier_loss(sig2, mask_fw)
+        losses['smooth_pose_2nd'] = (pose_second_order_loss(tf.concat([pose_fw, sig1],
+            axis=3)) + pose_second_order_loss(tf.concat([pose_bw, sig2], axis=3)))
+        losses['pose_scale'] = 0 #charbonnier_loss(sig1, mask_fw) + charbonnier_loss(sig2, mask_fw)
         losses['sym_pose'] = 0
+        """
+        tf.add_to_collection('poses', tf.identity(tf.concat([pose_fw, trans1, sig1], axis=3),
+            name='pose_fw'))
+        tf.add_to_collection('poses', tf.identity(tf.concat([pose_bw, transw, sig2], axis=3),
+            name='pose_bw'))
+        """
     else :
         losses['epipolar'] = 0
         losses['smooth_pose_2nd'] = 0
@@ -347,26 +353,30 @@ def _pose_second_order_deltas(pose):
         weight_array[:, :, 0, 3] = filter_diag2
         weights = tf.constant(weight_array, dtype=tf.float32)
 
-        pose_tx, pose_ty, pose_tz, pose_rx, pose_ry, pose_rz = tf.split(axis=3, num_or_size_splits=6, value=pose)
+        pose_tx, pose_ty, pose_tz, pose_rx, pose_ry, pose_rz, sig_t, sig_r = tf.split(axis=3, num_or_size_splits=8, value=pose)
         delta_tx = conv2d(pose_tx, weights)
         delta_ty = conv2d(pose_ty, weights)
         delta_tz = conv2d(pose_tz, weights)
         delta_rx = conv2d(pose_rx, weights)
         delta_ry = conv2d(pose_ry, weights)
         delta_rz = conv2d(pose_rz, weights)
-        return delta_tx, delta_ty, delta_tz, delta_rx, delta_ry, delta_rz, mask
+        delta_sigt = conv2d(sig_t, weights)
+        delta_sigr = conv2d(sig_r, weights)
+        return delta_tx, delta_ty, delta_tz, delta_rx, delta_ry, delta_rz, sig_t, sig_r, mask
 
 
 def pose_second_order_loss(pose):
     with tf.variable_scope('pose_second_order_loss'):
-        delta_tx, delta_ty, delta_tz, delta_rx, delta_ry, delta_rz, mask = _pose_second_order_deltas(pose)
+        delta_tx, delta_ty, delta_tz, delta_rx, delta_ry, delta_rz, delta_sigt, delta_sigr, mask = _pose_second_order_deltas(pose)
         loss_tx = charbonnier_loss(delta_tx, mask)
         loss_ty = charbonnier_loss(delta_ty, mask)
         loss_tz = charbonnier_loss(delta_tz, mask)
         loss_rx = charbonnier_loss(delta_rx, mask)
         loss_ry = charbonnier_loss(delta_ry, mask)
         loss_rz = charbonnier_loss(delta_rz, mask)
-        return loss_tx + loss_ty + loss_tz + loss_rx + loss_ry + loss_rz
+        loss_sigt = charbonnier_loss(delta_sigt, mask)
+        loss_sigr = charbonnier_loss(delta_sigr, mask)
+        return loss_tx + loss_ty + loss_tz + loss_rx + loss_ry + loss_rz + loss_sigt + loss_sigr
 
 
 def _second_order_deltas(flow):
