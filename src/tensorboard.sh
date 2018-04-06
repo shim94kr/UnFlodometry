@@ -1,1 +1,1 @@
-tensorboard --logdir=../log/ex/C84 --port=8080
+tensorboard --logdir=../log/ex/C94 --port=8080

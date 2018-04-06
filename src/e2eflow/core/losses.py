@@ -15,6 +15,7 @@ def length_sq(x):
 
 def compute_losses(im1, im2, flow_fw, flow_bw,
                    pose_fw=None, pose_bw=None, intrinsic1=None, intrinsic2=None,
+                   flow2_fw=None, flow2_bw=None,
                    border_mask=None,
                    mask_occlusion='',
                    data_max_distance=1):
@@ -91,14 +92,35 @@ def compute_losses(im1, im2, flow_fw, flow_bw,
                                       max_distance=data_max_distance))
 
     if pose_fw is not None:
+        im2_warped = image_warp(im2, flow2_fw)
+        im1_warped = image_warp(im1, flow2_bw)
+        flow2_bw_warped = image_warp(flow2_bw, flow2_fw)
+        flow2_fw_warped = image_warp(flow2_fw, flow2_bw)
+        flow2_diff_fw = flow2_fw + flow2_bw_warped
+        flow2_diff_bw = flow2_bw + flow2_fw_warped
+        #pose_bw_warped = image_warp(pose_bw, flow_fw)
+        #pose_fw_warped = image_warp(pose_fw, flow_bw)
+        losses['ternary'] += (ternary_loss(im1, im2_warped, mask_fw,
+                                          max_distance=data_max_distance) +
+                             ternary_loss(im2, im1_warped, mask_bw,
+                                              max_distance=data_max_distance))
+        losses['smooth_2nd'] += (second_order_loss(flow2_fw) +
+                                second_order_loss(flow2_bw))
+        losses['fb'] += (charbonnier_loss(flow2_diff_fw, mask_fw) +
+                        charbonnier_loss(flow2_diff_bw, mask_bw))
+
         rot1, trans1, sig1, pose_fw = posegrid_vec2mat(pose_fw)
         rot2, trans2, sig2, pose_bw = posegrid_vec2mat(pose_bw)
+        #rot1_wp, trans1_wp, _, _ = posegrid_vec2mat(pose_bw_warped)
+        #rot2_wp, trans2_wp, _, _ = posegrid_vec2mat(pose_fw_warped)
+        pose_fw_all = tf.concat([pose_fw, sig1], axis=3)
+        pose_bw_all = tf.concat([pose_bw, sig2], axis=3)
         losses['epipolar'] = (epipolar_loss(flow_fw, rot1, trans1, intrinsic1, intrinsic2, mask_fw) + \
                              epipolar_loss(flow_bw, rot2, trans2, intrinsic1, intrinsic2, mask_bw))
-        losses['smooth_pose_2nd'] = (pose_second_order_loss(pose_fw) +
-                                    pose_second_order_loss(pose_bw))
-        losses['pose_scale'] = charbonnier_loss(sig1, mask_fw) + charbonnier_loss(sig2, mask_fw)
-        losses['sym_pose'] = 0
+        losses['smooth_pose_2nd'] = (pose_second_order_loss(pose_fw_all) + pose_second_order_loss(pose_bw_all))
+        losses['pose_scale'] = 0 #charbonnier_loss(sig1, mask_fw) + charbonnier_loss(sig2, mask_fw)
+        losses['sym_pose'] = 0#sym_pose_loss(rot1, trans1, rot1_wp, trans1_wp) + sym_pose_loss(rot2, trans2, rot2_wp, trans2_wp)
+        return losses, pose_fw_all, pose_bw_all
     else :
         losses['epipolar'] = 0
         losses['smooth_pose_2nd'] = 0
@@ -106,6 +128,19 @@ def compute_losses(im1, im2, flow_fw, flow_bw,
         losses['sym_pose'] = 0
     
     return losses
+
+def sym_pose_loss(rot, trans, rot_wp, trans_wp):
+    batch_size, H, W, _, _ = tf.unstack(tf.shape(rot))
+    identity_mat = tf.eye(3, batch_shape=[batch_size])
+    identity_mat = tf.tile(tf.expand_dims(tf.expand_dims(identity_mat, 1), 1), [1, H, W, 1, 1])
+    rot_res = tf.matmul(rot, rot_wp) - identity_mat
+
+    trans = tf.expand_dims(trans, -1)
+    trans_wp = tf.expand_dims(trans_wp, -1)
+    trans_res = tf.matmul(rot_wp, trans) - trans_wp
+    sym_rot_error = tf.pow(tf.square(rot_res) + tf.square(0.001), 0.45)
+    sym_trans_error = tf.pow(tf.square(trans_res) + tf.square(0.001), 0.45)
+    return tf.reduce_mean(sym_rot_error) + tf.reduce_mean(sym_trans_error)
 
 def epipolar_loss(flow, rot, trans, intrinsic1, intrinsic2, mask, forward=True):
     batch_size, H, W, _ = tf.unstack(tf.shape(flow))
@@ -347,26 +382,34 @@ def _pose_second_order_deltas(pose):
         weight_array[:, :, 0, 3] = filter_diag2
         weights = tf.constant(weight_array, dtype=tf.float32)
 
-        pose_tx, pose_ty, pose_tz, pose_rx, pose_ry, pose_rz = tf.split(axis=3, num_or_size_splits=6, value=pose)
+        pose_tx, pose_ty, pose_tz, pose_rx, pose_ry, pose_rz, sig_tx, sig_ty, sig_tz, sig_r = tf.split(axis=3, num_or_size_splits=10, value=pose)
         delta_tx = conv2d(pose_tx, weights)
         delta_ty = conv2d(pose_ty, weights)
         delta_tz = conv2d(pose_tz, weights)
         delta_rx = conv2d(pose_rx, weights)
         delta_ry = conv2d(pose_ry, weights)
         delta_rz = conv2d(pose_rz, weights)
-        return delta_tx, delta_ty, delta_tz, delta_rx, delta_ry, delta_rz, mask
+        delta_sigtx = conv2d(sig_tx, weights)
+        delta_sigty = conv2d(sig_ty, weights)
+        delta_sigtz = conv2d(sig_tz, weights)
+        delta_sigr = conv2d(sig_r, weights)
+        return delta_tx, delta_ty, delta_tz, delta_rx, delta_ry, delta_rz, delta_sigtx, delta_sigty, delta_sigtz, delta_sigr, mask
 
 
 def pose_second_order_loss(pose):
     with tf.variable_scope('pose_second_order_loss'):
-        delta_tx, delta_ty, delta_tz, delta_rx, delta_ry, delta_rz, mask = _pose_second_order_deltas(pose)
+        delta_tx, delta_ty, delta_tz, delta_rx, delta_ry, delta_rz, delta_sigtx, delta_sigty, delta_sigtz, delta_sigr, mask = _pose_second_order_deltas(pose)
         loss_tx = charbonnier_loss(delta_tx, mask)
         loss_ty = charbonnier_loss(delta_ty, mask)
         loss_tz = charbonnier_loss(delta_tz, mask)
         loss_rx = charbonnier_loss(delta_rx, mask)
         loss_ry = charbonnier_loss(delta_ry, mask)
         loss_rz = charbonnier_loss(delta_rz, mask)
-        return loss_tx + loss_ty + loss_tz + loss_rx + loss_ry + loss_rz
+        loss_sigtx = charbonnier_loss(delta_sigtx, mask)
+        loss_sigty = charbonnier_loss(delta_sigty, mask)
+        loss_sigtz = charbonnier_loss(delta_sigtz, mask)
+        loss_sigr = charbonnier_loss(delta_sigr, mask)
+        return loss_tx + loss_ty + loss_tz + loss_rx + loss_ry + loss_rz + loss_sigtx + loss_sigty + loss_sigtz + loss_sigr
 
 
 def _second_order_deltas(flow):

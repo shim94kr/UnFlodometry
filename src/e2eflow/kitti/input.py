@@ -23,6 +23,28 @@ def _read_flow(filenames, num_epochs=None):
     mask = gt[:, :, 2:3]
     return flow, mask
 
+def _read_raw_intrinsics_gt(filenames):
+    # filenames : list('../data/kitti_raw/dates/dates_drives/image_cam/data/**.png', ..)
+    intrinsics = []
+    for file in filenames:
+        filedata = {}
+        with open(file, 'r') as f:
+            for line in f.readlines():
+                key, value = line.split(':', 1)
+                # The only non-float values in these files are dates, which
+                # we don't care about anyway
+                try:
+                    filedata[key] = np.array([float(x) for x in value.split()])
+                except ValueError:
+                    pass
+        try :
+            P_rect = np.reshape(filedata['P_rect_00'], (3, 4))
+        except :
+            P_rect = np.reshape(filedata['P0'], (3, 4))
+        P_rect_tf = tf.constant(P_rect[:3,:3])
+        intrinsics.append(P_rect_tf)
+    return intrinsics
+
 class KITTIInput(Input):
     def __init__(self, data, batch_size, dims, *,
                  num_threads=1, normalize=True,
@@ -129,25 +151,31 @@ class KITTIInput(Input):
                     'data_stereo_flow/training/colored_0']
         gt_dirs = ['data_scene_flow/training/flow_occ',
                    'data_stereo_flow/training/flow_occ']
+        calib_dirs = ['data_scene_flow/training/calib',
+                   'data_stereo_flow/training/calib']
 
         height, width = self.dims
 
         filenames = []
-        for img_dir, gt_dir in zip(img_dirs, gt_dirs):
+        for img_dir, gt_dir, calib_dir in zip(img_dirs, gt_dirs, calib_dirs):
             dataset_filenames = []
             img_dir = os.path.join(self.data.current_dir, img_dir)
             gt_dir = os.path.join(self.data.current_dir, gt_dir)
+            calib_dir = os.path.join(self.data.current_dir, calib_dir)
             img_files = os.listdir(img_dir)
             gt_files = os.listdir(gt_dir)
+            calib_files = os.listdir(calib_dir)
             img_files.sort()
             gt_files.sort()
+            calib_files.sort()
             assert len(img_files) % 2 == 0 and len(img_files) / 2 == len(gt_files)
 
             for i in range(len(gt_files)):
                 fn_im1 = os.path.join(img_dir, img_files[2 * i])
                 fn_im2 = os.path.join(img_dir, img_files[2 * i + 1])
                 fn_gt = os.path.join(gt_dir, gt_files[i])
-                dataset_filenames.append((fn_im1, fn_im2, fn_gt))
+                fn_calib = os.path.join(calib_dir, calib_files[i])
+                dataset_filenames.append((fn_im1, fn_im2, fn_gt, fn_calib))
 
             random.seed(0)
             random.shuffle(dataset_filenames)
@@ -160,13 +188,17 @@ class KITTIInput(Input):
         #shift = shift % len(filenames)
         #filenames_ = list(np.roll(filenames, shift))
 
-        fns_im1, fns_im2, fns_gt = zip(*filenames)
+        fns_im1, fns_im2, fns_gt, fns_calib = zip(*filenames)
         fns_im1 = list(fns_im1)
         fns_im2 = list(fns_im2)
         fns_gt = list(fns_gt)
+        fns_calib = list(fns_calib)
 
-        im1 = read_png_image(fns_im1)
-        im2 = read_png_image(fns_im2)
+        intrinsics = _read_raw_intrinsics_gt(fns_calib)
+        input_queue = tf.train.slice_input_producer([fns_im1, fns_im2, intrinsics],
+                                                    shuffle=False)
+        im1, im2 = read_images_from_disk(input_queue[0:2])
+        intrinsic = input_queue[2]
         flow_gt, mask_gt = _read_flow(fns_gt)
 
         gt_queue = tf.train.string_input_producer(fns_gt,
@@ -176,8 +208,8 @@ class KITTIInput(Input):
         gt_uint16 = tf.image.decode_png(gt_value, dtype=tf.uint16)
         gt = tf.cast(gt_uint16, tf.float32)
 
-        im1, im2, gt = random_crop([im1, im2, gt],
-                                   [height, width, 3])
+        im1, im2, gt, intrinsic = random_crop([im1, im2, gt],
+                                   [height, width, 3], intrinsic=intrinsic)
         flow_gt = (gt[:, :, 0:2] - 2 ** 15) / 64.0
         mask_gt = gt[:, :, 2:3]
 
@@ -186,7 +218,7 @@ class KITTIInput(Input):
             im2 = self._normalize_image(im2)
 
         return tf.train.batch(
-            [im1, im2, flow_gt, mask_gt],
+            [im1, im2, flow_gt, mask_gt, intrinsic],
             batch_size=self.batch_size,
             num_threads=self.num_threads)
 

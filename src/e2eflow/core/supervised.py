@@ -4,14 +4,15 @@ import numpy as np
 
 from .augment import random_photometric
 from .flow_util import flow_to_color
-from .losses import charbonnier_loss
+from .losses import charbonnier_loss, epipolar_loss
 from .flownet import flownet
+from .util import posegrid_vec2mat
 from .unsupervised import _track_image, _track_loss, FLOW_SCALE
 
 
 def supervised_loss(batch, params, normalization=None):
     channel_mean = tf.constant(normalization[0]) / 255.0
-    im1, im2, flow_gt, mask_gt = batch
+    im1, im2, flow_gt, mask_gt, intrinsic = batch
     im1 = im1 / 255.0
     im2 = im2 / 255.0
     im_shape = tf.shape(im1)[1:3]
@@ -38,24 +39,38 @@ def supervised_loss(batch, params, normalization=None):
     train_all = params.get('train_all')
     # -------------------------------------------------------------------------
     # FlowNet
-    flows_fw = flownet(im1_photo, im2_photo,
+    flows_fw, flows2_fw, poses_fw = flownet(im1_photo, im2_photo,
                        flownet_spec=flownet_spec,
                        full_resolution=full_resolution,
                        train_all=train_all)
-    
+
+
     if not train_all:
         flows_fw = [flows_fw[-1]]
+        flows2_fw = [flows2_fw[-1]]
+        poses_fw = [poses_fw[-1]]
     final_loss = 0.0
-    for i, net_flows in enumerate(reversed(flows_fw)):
+    rev_flows_fw = reversed(flows_fw)
+    rev_flows2_fw = reversed(flows2_fw)
+    rev_poses_fw = reversed(poses_fw)
+    flow_enum = enumerate(zip(rev_flows_fw, rev_flows2_fw, rev_poses_fw))
+    for i, net_flows, net_flows2, net_poses in flow_enum:
         flow_fw = net_flows[0]
+        flow2_fw = net_flows2[0]
+        pose_fw = net_poses[0]
+        rot, trans, sig, pose_fw = posegrid_vec2mat(pose_fw)
+
         if params.get('full_res'):
             final_flow_fw = flow_fw * FLOW_SCALE * 4
+            final_flow2_fw = flow2_fw * FLOW_SCALE * 4
         else:
             final_flow_fw = tf.image.resize_bilinear(flow_fw, im_shape) * FLOW_SCALE * 4
+            final_flow2_fw = tf.image.resize_bilinear(flow2_fw, im_shape) * FLOW_SCALE * 4
         _track_image(flow_to_color(final_flow_fw), 'flow_pred_' + str(i))
 
-        net_loss = charbonnier_loss(final_flow_fw - flow_gt, mask_gt)
-        final_loss += net_loss / (2 ** i)
+        net_loss = charbonnier_loss(final_flow_fw - flow_gt, mask_gt) + charbonnier_loss(final_flow2_fw - flow_gt, mask_gt)
+        epi_loss = epipolar_loss(flow_gt, rot, trans, intrinsic, intrinsic, mask_gt)
+        final_loss += (net_loss + epi_loss) / (2 ** i)
 
     regularization_loss = tf.add_n(slim.losses.get_regularization_losses())
     final_loss += regularization_loss

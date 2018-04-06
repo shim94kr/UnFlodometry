@@ -1,3 +1,87 @@
+
+def flownet_p(inputs, channel_mult=1, full_res=False):
+    """Given stacked inputs, returns flow predictions in decreasing resolution.
+
+    Uses FlowNetSimple.
+    """
+    m = channel_mult
+    inputs = nhwc_to_nchw([inputs])[0]
+
+    with slim.arg_scope([slim.conv2d, slim.conv2d_transpose],
+                        data_format='NCHW',
+                        weights_regularizer=slim.l2_regularizer(0.0004),
+                        weights_initializer=layers.variance_scaling_initializer(),
+                        activation_fn=_leaky_relu):
+        cnv1 = slim.conv2d(inputs, 32, [7, 7], stride=2, scope='cnv1')
+        cnv1b = slim.conv2d(cnv1, 32, [7, 7], stride=1, scope='cnv1b')
+        cnv2 = slim.conv2d(cnv1b, 64, [5, 5], stride=2, scope='cnv2')
+        cnv2b = slim.conv2d(cnv2, 64, [5, 5], stride=1, scope='cnv2b')
+        cnv3 = slim.conv2d(cnv2b, 128, [3, 3], stride=2, scope='cnv3')
+        cnv3b = slim.conv2d(cnv3, 128, [3, 3], stride=1, scope='cnv3b')
+        cnv4 = slim.conv2d(cnv3b, 256, [3, 3], stride=2, scope='cnv4')
+        cnv4b = slim.conv2d(cnv4, 256, [3, 3], stride=1, scope='cnv4b')
+        cnv5 = slim.conv2d(cnv4b, 512, [3, 3], stride=2, scope='cnv5')
+        cnv5b = slim.conv2d(cnv5, 512, [3, 3], stride=1, scope='cnv5b')
+        cnv6 = slim.conv2d(cnv5b, 512, [3, 3], stride=2, scope='cnv6')
+        cnv6b = slim.conv2d(cnv6, 512, [3, 3], stride=1, scope='cnv6b')
+
+        icnv6 = slim.conv2d(cnv6b, 512, [3, 3], stride=1, scope='icnv6')
+        pose6 = POSE_SCALING * slim.conv2d(icnv6, 6, 4, activation_fn=None, stride=1, scope='pose6')
+
+        upcnv5 = slim.conv2d_transpose(icnv6, 512, 4, stride=2, scope='upcnv5')
+        depose5 = slim.conv2d_transpose(pose6, 6, 4, stride=2, scope='depose5')
+        i5_in = tf.concat([upcnv5, cnv5b, depose5], axis=1)
+        icnv5 = slim.conv2d(i5_in, 512, 4, stride=1, scope='icnv5')
+        pose5 = POSE_SCALING * slim.conv2d(icnv5, 6, 4, activation_fn=None, stride=1, scope='pose5')
+
+        upcnv4 = slim.conv2d_transpose(icnv5, 256, 4, stride=2, scope='upcnv4')
+        depose4 = slim.conv2d_transpose(pose5, 6, 4, stride=2, scope='depose4')
+        i4_in = tf.concat([upcnv4, cnv4b, depose4], axis=1)
+        icnv4 = slim.conv2d(i4_in, 256, 4, stride=1, scope='icnv4')
+        pose4 = POSE_SCALING * slim.conv2d(icnv4, 6, 4, activation_fn=None, stride=1, scope='pose4')
+
+        upcnv3 = slim.conv2d_transpose(icnv4, 128, 4, stride=2, scope='upcnv3')
+        depose3 = slim.conv2d_transpose(pose4, 6, 4, stride=2, scope='depose3')
+        i3_in = tf.concat([upcnv3, cnv3b, depose3], axis=1)
+        icnv3 = slim.conv2d(i3_in, 128, 4, stride=1, scope='icnv3')
+        pose3 = POSE_SCALING * slim.conv2d(icnv3, 6, 4, activation_fn=None, stride=1, scope='pose3')
+
+        upcnv2 = slim.conv2d_transpose(icnv3, 64, 4, stride=2, scope='upcnv2')
+        depose2 = slim.conv2d_transpose(pose3, 6, 4, stride=2, scope='depose2')
+        i2_in = tf.concat([upcnv2, cnv2b, depose2], axis=1)
+        icnv2 = slim.conv2d(i2_in, 64, 4, stride=1, scope='icnv2')
+        pose2 = POSE_SCALING * slim.conv2d(icnv2, 6, 4, activation_fn=None, stride=1, scope='pose2')
+
+        pose_final = [pose2, pose3, pose4, pose5, pose6]
+        if full_res:
+            upcnv1 = slim.conv2d_transpose(icnv2, 32, 4, stride=2, scope='upcnv1')
+            depose1 = slim.conv2d_transpose(pose2, 6, 4, stride=2, scope='depose1')
+            i1_in = tf.concat([upcnv1, cnv1b, depose1], axis=1)
+            icnv1 = slim.conv2d(i1_in, 32, 4, stride=1, scope='icnv1')
+            pose1 = POSE_SCALING * slim.conv2d(icnv1, 6, 4, activation_fn=None, stride=1, scope='pose1')
+
+            upcnv0 = slim.conv2d_transpose(icnv1, 16, 4, stride=2, scope='upcnv0')
+            depose0 = slim.conv2d_transpose(pose1, 6, 4, stride=2, scope='depose0')
+            i0_in = tf.concat([upcnv0, inputs, depose0], axis=1)
+            icnv0 = slim.conv2d(i0_in, 16, 4, stride=1, scope='icnv0')
+            pose0 = POSE_SCALING * slim.conv2d(icnv0, 6, 4, activation_fn=None, stride=1, scope='pose0')
+
+            inputs = tf.concat([inputs, pose0], axis=1)
+            conv1 = tf.concat([cnv1b, pose1], axis=1)
+            pose_final = [pose0, pose1] + pose_final
+        else :
+            conv1 = cnv1b
+        conv2 = tf.concat([cnv2b, pose2], axis=1)
+        conv3_1 = tf.concat([cnv3b, pose3], axis=1)
+        conv4_1 = tf.concat([cnv4b, pose4], axis=1)
+        conv5_1 = tf.concat([cnv5b, pose5], axis=1)
+        conv6_1 = tf.concat([cnv6b, pose6], axis=1)
+
+        res = _flownet_upconv(conv6_1, conv5_1, conv4_1, conv3_1, conv2, conv1, inputs,
+                              channel_mult=channel_mult, full_res=full_res)
+        return nchw_to_nhwc(res), nchw_to_nhwc(pose_final)
+
+
 #from losses
 if mask_dyn:
     mask_dyn_fw = tf.sigmoid(mask_dyn_fw)

@@ -166,7 +166,9 @@ def main(argv=None):
                             dims=(sconfig['height'], sconfig['width']))
         tr = Trainer(
               lambda shift: sinput.input_raw(swap_images=False,
-                                             shift=shift * run_config['batch_size']),
+                                             center_crop=True,
+                                             shift=shift * run_config['batch_size'],
+                                             epipolar_weight=sconfig.get('epipolar_weight', None)),
               lambda: einput.input_train_2012(),
               params=sconfig,
               normalization=sinput.get_normalization(),

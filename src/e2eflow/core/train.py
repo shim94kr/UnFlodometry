@@ -26,6 +26,7 @@ def restore_networks(sess, params, ckpt, ckpt_path=None):
     finetune = params.get('finetune', [])
     train_all = params.get('train_all', None)
     spec = params.get('flownet', 'S')
+    pose_prediction = params.get('pose_pred')
     flownet_num = len(spec)
 
     net_names = ['flownet_c'] + ['stack_{}_flownet'.format(i+1) for i in range(flownet_num - 1)]
@@ -53,6 +54,9 @@ def restore_networks(sess, params, ckpt, ckpt_path=None):
             nets_to_restore = [net_names[i]]
             variables_to_restore = slim.get_variables_to_restore(
                 include=nets_to_restore)
+            if pose_prediction is None or False:
+                variables_to_restore = [v for v in variables_to_restore
+                                        if not 'pose_pred' in v.name]
             restorer = tf.train.Saver(variables_to_restore)
             restorer.restore(sess, ckpt.model_checkpoint_path)
         except:
@@ -62,6 +66,9 @@ def restore_networks(sess, params, ckpt, ckpt_path=None):
                 include=nets_to_restore)
             variables_to_restore = [v for v in variables_to_restore
                                     if not 'full_res' in v.name]
+            if pose_prediction is None or False:
+                variables_to_restore = [v for v in variables_to_restore
+                                        if not 'pose_pred' in v.name]
             restorer = tf.train.Saver(variables_to_restore)
             restorer.restore(sess, ckpt.model_checkpoint_path)
     return saver
@@ -96,6 +103,10 @@ def _add_pose_summaries():
         tf.summary.histogram("rx", pose[:,3])
         tf.summary.histogram("ry", pose[:,4])
         tf.summary.histogram("rz", pose[:,5])
+        tf.summary.histogram("sigtx", pose[:,6])
+        tf.summary.histogram("sigty", pose[:,7])
+        tf.summary.histogram("sigtz", pose[:,8])
+        tf.summary.histogram("sigr", pose[:,9])
 
 
 def _eval_plot(results, image_names, title):

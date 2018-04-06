@@ -92,17 +92,21 @@ def unsupervised_loss(batch, params, normalization=None, augment=True,
 
     flownet_spec = params.get('flownet', 'S')
     full_resolution = params.get('full_res')
+    pose_prediction = params.get('pose_pred')
     train_all = params.get('train_all')
 
-    flows_fw, flows_bw, poses_fw, poses_bw = flownet(im1_photo, im2_photo,
+    flows_fw, flows_bw, flows2_fw, flows2_bw, poses_fw, poses_bw = flownet(im1_photo, im2_photo,
                                                 flownet_spec=flownet_spec,
                                                 full_resolution=full_resolution,
+                                                pose_prediction=pose_prediction,
                                                 backward_flow=True,
                                                 train_all=train_all)
 
     flows_fw = flows_fw[-1]
     flows_bw = flows_bw[-1]
-    if "P" in flownet_spec:
+    if pose_prediction:
+        flows2_fw = flows2_fw[-1]
+        flows2_bw = flows2_bw[-1]
         poses_fw = poses_fw[-1]
         poses_bw = poses_bw[-1]
 
@@ -155,18 +159,19 @@ def unsupervised_loss(batch, params, normalization=None, augment=True,
                 poses_bw[i] = POSE_SCALE * poses_bw[i]
             """
             if len(batch) == 3:
-                losses = compute_losses(im1_s, im2_s,
+                losses, pose_fw_all, pose_bw_all = compute_losses(im1_s, im2_s,
                             flow_fw_s * flow_scale, flow_bw_s * flow_scale,
                             poses_fw[i], poses_bw[i], intrinsics1[:, i + 2, :, :], intrinsics2[:, i + 2, :, :],
+                            flows2_fw[i], flows2_bw[i],
                             border_mask=mask_s if params.get('border_mask') else None,
                             mask_occlusion=mask_occlusion,
                             data_max_distance=layer_patch_distances[i])
                 if mean_pose_fw is None :
-                    mean_pose_fw = tf.reduce_mean(poses_fw[i], axis=[1, 2])
-                    mean_pose_bw = tf.reduce_mean(poses_bw[i], axis=[1, 2])
+                    mean_pose_fw = tf.reduce_mean(pose_fw_all, axis=[1, 2])
+                    mean_pose_bw = tf.reduce_mean(pose_bw_all, axis=[1, 2])
                 else:
-                    mean_pose_fw = tf.concat([mean_pose_fw, tf.reduce_mean(poses_fw[i], axis=[1, 2])], axis=0)
-                    mean_pose_bw = tf.concat([mean_pose_bw, tf.reduce_mean(poses_bw[i], axis=[1, 2])], axis=0)
+                    mean_pose_fw = tf.concat([mean_pose_fw, tf.reduce_mean(pose_fw_all, axis=[1, 2])], axis=0)
+                    mean_pose_bw = tf.concat([mean_pose_bw, tf.reduce_mean(pose_bw_all, axis=[1, 2])], axis=0)
             else :
                 losses = compute_losses(im1_s, im2_s,
                                     flow_fw_s * flow_scale, flow_bw_s * flow_scale,
